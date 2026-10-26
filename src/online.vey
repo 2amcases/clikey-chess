@@ -1,0 +1,65 @@
+import { applyMove, legalMoves, sanForMove, type ChessMove, type ChessPosition, type ChessRecord } from './engine'
+
+# Play-by-code: one player makes a game and gets a 6-character code, the other types it in. Moves travel through a small
+# room server (mambru-backend, /api/chess). Only the two squares, an optional promotion piece and a coin-flip color are
+# sent: no names, no accounts, nothing stored after the game is idle for three hours.
+export const SERVER = 'https://mega-backend-production.up.railway.app'
+export const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+export const POLL_MS = 1200
+
+export const serverUrl = (): string => {
+  const override = typeof window != 'undefined' ? (window as unknown as { CLIKEY_CHESS_SERVER?: string }).CLIKEY_CHESS_SERVER : undefined
+  return override ? override : SERVER
+}
+
+/** What a person typed, made tidy: spaces and dashes dropped, capitals, only letters the codes use. '' when it is not a code. */
+export const normalizeCode = (text: string): string => {
+  const code = String(text ?? '').toUpperCase().replace(/[\s-]/g, '')
+  return code.length == 6 and [...code].every(ch => CODE_CHARS.includes(ch)) ? code : ''
+}
+/** Shown as ABC-123 so it is easy to read out loud. */
+export const prettyCode = (code: string): string => code.length == 6 ? `${code.slice(0, 3)}-${code.slice(3)}` : code
+
+export interface RoomState { version: number; moves: ChessMove[]; players: { w: boolean; b: boolean }; result: { type: string; loser: 'w' | 'b' } | null; color: 'w' | 'b' }
+export interface CallResult<T> { ok: boolean; status: number; data?: T; error?: string; code?: string }
+
+type Fetcher = typeof fetch
+async fn call<T>(path: string, options: { token?: string; body?: unknown; method?: string } = {}, fetcher: Fetcher = fetch): Promise<CallResult<T>> {
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if options.token { headers.Authorization = `Bearer ${options.token}` }
+    const response = await fetcher(`${serverUrl()}/api/chess${path}`, { method: options.method ?? (options.body ? 'POST' : 'GET'), headers, body: options.body ? JSON.stringify(options.body) : undefined, cache: 'no-store' })
+    const data = await response.json().catch(() => ({}))
+    if response.ok { return { ok: true, status: response.status, data: data as T } }
+    return { ok: false, status: response.status, error: data?.error ?? 'Something went wrong.', code: data?.code }
+  } catch {
+    return { ok: false, status: 0, error: 'Could not reach the game server. Check your internet and try again.', code: 'network' }
+  }
+}
+
+export const createGame = (color: 'w' | 'b' | 'random', fetcher?: Fetcher) => call<{ code: string; token: string; color: 'w' | 'b' }>('/rooms', { body: { color } }, fetcher)
+export const joinGame = (code: string, fetcher?: Fetcher) => call<{ code: string; token: string; color: 'w' | 'b' }>(`/rooms/${code}/join`, { body: {} }, fetcher)
+export const fetchState = (code: string, token: string, since: number, fetcher?: Fetcher) => call<RoomState>(`/rooms/${code}?since=${since}`, { token }, fetcher)
+export const sendMove = (code: string, token: string, move: ChessMove, ply: number, fetcher?: Fetcher) => {
+  const sent: ChessMove = { from: move.from, to: move.to }
+  if move.promotion { sent.promotion = move.promotion }
+  return call<{ version: number }>(`/rooms/${code}/move`, { token, body: { move: sent, ply } }, fetcher)
+}
+export const resignGame = (code: string, token: string, fetcher?: Fetcher) => call<{ result: RoomState['result'] }>(`/rooms/${code}/resign`, { token, body: {} }, fetcher)
+
+/**
+ * Apply moves that came from the other computer. Each one is checked against this device's own rules: it must be a legal
+ * move for the side to play, so a broken or dishonest opponent cannot put an impossible position on the board.
+ */
+export fn applyRemoteMoves(position: ChessPosition, records: ChessRecord[], moves: ChessMove[]): { position: ChessPosition; records: ChessRecord[]; error: string } {
+  let current = position
+  const next = [...records]
+  for incoming in moves {
+    const base = legalMoves(current, incoming.from).find(candidate => candidate.to == incoming.to)
+    if not base { return { position: current, records: next, error: 'Your opponent sent a move that is not legal. The game was stopped.' } }
+    const move = base.promotion ? { ...base, promotion: ['Q', 'R', 'B', 'N'].includes(incoming.promotion ?? '') ? incoming.promotion : 'Q' } : base
+    next.push({ move, san: sanForMove(current, move), before: current })
+    current = applyMove(current, move)
+  }
+  return { position: current, records: next, error: '' }
+}

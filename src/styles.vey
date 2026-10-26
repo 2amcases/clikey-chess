@@ -50,6 +50,31 @@ button { border: 0; font: inherit; cursor: pointer; -webkit-tap-highlight-color:
 .chess-color-picker button { min-height: 36px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--chess-line); border-radius: 7px; background: rgba(255,255,255,.44); color: #59665c !important; font-size: 10px; font-weight: 650; }
 .chess-color-picker button.selected { border-color: #77917d; background: #e4e9df; color: var(--chess-ink) !important; }
 .chess-color-picker button b { font-size: 17px; }
+.chess-mode-tabs.three { grid-template-columns: 1fr 1fr 1fr; }
+.chess-elo { margin: -3px 0 12px; padding: 11px 12px 10px; border: 1px solid var(--chess-line); border-radius: 9px; background: rgba(255,255,255,.36); }
+.chess-elo-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.chess-elo-head span { color: var(--chess-muted); font-size: 8px; font-weight: 750; letter-spacing: .16em; }
+.chess-elo-head strong { color: var(--chess-ink); font-size: 12px; font-weight: 700; }
+.chess-elo input[type=range] { width: 100%; height: 28px; margin: 0; accent-color: var(--chess-green); cursor: pointer; }
+.chess-elo-scale { display: flex; justify-content: space-between; margin-top: 1px; color: var(--chess-muted); font-size: 9px; }
+.chess-elo small { display: block; margin-top: 8px; color: var(--chess-muted); font-size: 9.5px; line-height: 1.45; }
+.chess-online { margin: -3px 0 12px; padding: 11px 12px; border: 1px solid var(--chess-line); border-radius: 9px; background: rgba(255,255,255,.36); display: grid; gap: 12px; }
+.chess-online-block > span, .chess-code > span { display: block; margin-bottom: 8px; color: var(--chess-muted); font-size: 8px; font-weight: 750; letter-spacing: .16em; }
+.chess-online-colors { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.chess-online-colors button { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--chess-line); border-radius: 7px; background: rgba(255,255,255,.44); color: #59665c !important; font-size: 10px; font-weight: 650; }
+.chess-online-colors button.selected { border-color: #77917d; background: #e4e9df; color: var(--chess-ink) !important; }
+.chess-online-colors button b { font-size: 15px; }
+.chess-online-go { width: 100%; min-height: 38px; border-radius: 8px; background: var(--chess-green); color: #fff !important; font-size: 11px; font-weight: 700; }
+.chess-online-go:disabled { opacity: .5; cursor: default; }
+.chess-join { display: grid; grid-template-columns: 1fr 78px; gap: 6px; }
+.chess-join input { min-height: 38px; padding: 0 11px; border: 1px solid var(--chess-line); border-radius: 8px; background: #faf8f1; color: var(--chess-ink); font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-transform: uppercase; }
+.chess-join input:focus-visible { outline: 2px solid #77917d; outline-offset: 1px; }
+.chess-code { display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 10px; }
+.chess-code > span { grid-column: 1 / -1; }
+.chess-code strong { color: var(--chess-ink); font: 800 26px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; }
+.chess-code button { min-height: 32px; padding: 0 12px; border: 1px solid var(--chess-line); border-radius: 7px; background: rgba(255,255,255,.55); color: var(--chess-ink) !important; font-size: 10px; font-weight: 650; }
+.chess-online-note { margin: 0; color: var(--chess-muted); font-size: 10.5px; line-height: 1.5; }
+.chess-online-error { margin: 0; padding: 8px 10px; border-radius: 7px; background: #f6e2de; color: #8a2f22; font-size: 10.5px; line-height: 1.45; }
 .chess-status-card { min-height: 67px; display: flex; align-items: center; gap: 12px; padding: 13px 15px; border: 1px solid var(--chess-line); border-radius: 10px; background: rgba(255,255,255,.48); }
 .chess-status-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: #76a281; box-shadow: 0 0 0 4px rgba(118,162,129,.13); }
 .chess-status-card.check .chess-status-dot { background: #c87554; box-shadow: 0 0 0 4px rgba(200,117,84,.13); }

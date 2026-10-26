@@ -130,7 +130,7 @@ export fn applyMove(position: ChessPosition, move: ChessMove): ChessPosition {
 export fn legalMoves(position: ChessPosition, from?: number): ChessMove[] {
   if typeof from == 'number' { return pseudoMoves(position, from).filter(move => not kingInCheck(applyMove(position, move).board, position.turn)) }
   const candidates: ChessMove[] = []
-  for square in 0..63 {
+  for square in 0..64 {
     const piece = position.board[square]
     if piece and colorOf(piece) == position.turn { candidates.push(...pseudoMoves(position, square)) }
   }
@@ -159,7 +159,7 @@ export fn sanForMove(position: ChessPosition, move: ChessMove): string {
 const pieceScores: Record<string, number> = { P: 100, N: 320, B: 335, R: 500, Q: 900, K: 0 }
 fn positionScore(position: ChessPosition): number {
   let score = 0
-  for square in 0..63 {
+  for square in 0..64 {
     const piece = position.board[square]
     if not piece { continue }
     const side = piece[0] == 'w' ? 1 : -1, type = typeOf(piece), row = Math.floor(square / 8), col = square % 8
@@ -216,4 +216,45 @@ export fn chooseComputerMove(position: ChessPosition, depth = 2): ChessMove | nu
     if position.turn == 'w' and score > best or position.turn == 'b' and score < best { best = score; choice = move }
   }
   return choice
+}
+
+# Computer strength. The slider is in rough Elo points. This engine is small and has not been rated against real players,
+# so the numbers are a guide: they rise with real strength (see the test that plays levels against each other).
+# Two things change with the level: how deep it looks, and how often it plays a "human" slip instead of its best move.
+export const MIN_ELO = 400
+export const MAX_ELO = 1600
+export const DEFAULT_ELO = 1200
+export const ELO_STEP = 100
+export const clampElo = (elo: number): number => {
+  const value = Number.isFinite(elo) ? Math.round(elo / ELO_STEP) * ELO_STEP : DEFAULT_ELO
+  return Math.max(MIN_ELO, Math.min(MAX_ELO, value))
+}
+export interface ComputerLevel { elo: number; depth: number; slip: number; pool: number }
+export const levelForElo = (elo: number): ComputerLevel => {
+  const level = clampElo(elo)
+  const depth = level < 900 ? 1 : level < 1300 ? 2 : 3
+  # 400 Elo slips on 7 moves in 10, falling in a straight line to 0 at the top level. A slip picks from the best few moves, more at the bottom.
+  const slip = Math.max(0, Math.min(0.7, (MAX_ELO - level) / (MAX_ELO - MIN_ELO) * 0.7))
+  const pool = Math.max(2, Math.round(6 - (level - MIN_ELO) / 300))
+  return { elo: level, depth, slip, pool }
+}
+export const eloLabel = (elo: number): string => {
+  const level = clampElo(elo)
+  return level < 700 ? 'Beginner' : level < 1000 ? 'Casual' : level < 1300 ? 'Club' : level < 1600 ? 'Strong' : 'Strongest'
+}
+
+/** Pick the computer's move for a level. `random` is injectable so tests are repeatable. */
+export fn chooseMoveForElo(position: ChessPosition, elo: number, random: () => number = Math.random): ChessMove | null {
+  const moves = orderedMoves(position)
+  if moves.length == 0 { return null }
+  const level = levelForElo(elo)
+  const scored = moves.map(move => ({ move, score: searchPosition(applyMove(position, move), level.depth - 1, -Infinity, Infinity) }))
+  scored.sort((a, b) => position.turn == 'w' ? b.score - a.score : a.score - b.score)
+  # Never throw away a forced win: if the best move mates, play it.
+  if Math.abs(scored[0].score) >= 100000 { return scored[0].move }
+  if random() < level.slip {
+    const pool = scored.slice(0, Math.min(level.pool, scored.length))
+    return pool[Math.floor(random() * pool.length)].move
+  }
+  return scored[0].move
 }

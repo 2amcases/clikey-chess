@@ -17,9 +17,13 @@ test('every route has publisher content, real navigation and no ad markup', () =
 })
 test('guides describe implementation-specific controls and tradeoffs', () => {
   const chess = renderToString(createElement(SiteApp, { path: '/guides/chess/' }))
-  for (const term of ['En passant', 'Undo move', 'promotion', 'page refresh', 'e2 to e4']) assert.ok(chess.includes(term), term)
+  for (const term of ['En passant', 'Undo move', 'promotion', 'page refresh', 'e2 to e4', 'Computer strength', 'game code', 'three idle hours']) assert.ok(chess.includes(term), term)
   const castle = renderToString(createElement(SiteApp, { path: '/guides/one-more-floor/' }))
   for (const term of ['BANK or RISK', 'ammunition', 'floor thirty', 'Browser and native phone progress are separate']) assert.ok(castle.includes(term), term)
+})
+test('the privacy page discloses the online game server', () => {
+  const privacy = renderToString(createElement(SiteApp, { path: '/privacy/' }))
+  for (const term of ['Online games', 'game server', 'IP address', 'three idle hours']) assert.ok(privacy.includes(term), term)
 })
 test('ad adapter stays disabled even with production publisher configuration', () => {
   assert.equal(renderToString(createElement(ChessAd)), '')

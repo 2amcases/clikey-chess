@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { applyMove, chessStatus, chooseComputerMove, legalMoves, sanForMove, startPosition, type ChessPosition } from '../src/engine.vey'
+import { applyMove, chessStatus, chooseComputerMove, chooseMoveForElo, clampElo, eloLabel, levelForElo, legalMoves, sanForMove, startPosition, type ChessPosition } from '../src/engine.vey'
 
 const play = (position: ChessPosition, from: number, to: number): ChessPosition => {
   const move = legalMoves(position, from).find(candidate => candidate.to == to)
@@ -86,4 +86,38 @@ test('the deeper opponent searches a legal reply for either side', () => {
   const blackMove = chooseComputerMove(position, 3)
   assert.ok(blackMove)
   assert.ok(legalMoves(position).some(move => move.from == blackMove.from and move.to == blackMove.to))
+})
+
+test('computer levels: Elo is clamped to steps of 100, deeper and steadier as it rises', () => {
+  assert.equal(clampElo(50), 400)
+  assert.equal(clampElo(5000), 1600)
+  assert.equal(clampElo(1234), 1200)
+  assert.equal(clampElo(NaN), 1200)
+  const low = levelForElo(400), mid = levelForElo(1200), high = levelForElo(1600)
+  assert.ok(low.depth <= mid.depth and mid.depth <= high.depth)
+  assert.ok(low.slip > mid.slip and mid.slip > high.slip)
+  assert.equal(high.slip, 0)
+  assert.ok(low.pool >= high.pool)
+  assert.equal(eloLabel(400), 'Beginner')
+  assert.equal(eloLabel(1600), 'Strongest')
+})
+
+test('computer levels: a mate in one is always played, at every level', () => {
+  # Black king h8 boxed by its own pawns g7 h7; white rook a1 -> a8 is mate.
+  const board = Array(64).fill(null)
+  board[7] = 'bK'; board[14] = 'bP'; board[15] = 'bP'; board[56] = 'wR'; board[60] = 'wK'
+  const position: ChessPosition = { board, turn: 'w', castling: '', enPassant: null, halfmove: 0, fullmove: 1 }
+  for elo in [400, 800, 1200, 1600] {
+    const move = chooseMoveForElo(position, elo, () => 0)
+    assert.ok(move)
+    assert.equal(chessStatus(applyMove(position, move)).startsWith('Checkmate'), true, `level ${elo} should mate`)
+  }
+})
+
+test('the h1 square counts: a piece there gives legal moves and is never skipped', () => {
+  const board = Array(64).fill(null)
+  board[4] = 'bK'; board[60] = 'wK'; board[63] = 'wR'
+  const position: ChessPosition = { board, turn: 'w', castling: '', enPassant: null, halfmove: 0, fullmove: 1 }
+  assert.ok(legalMoves(position).some(move => move.from == 63), 'the rook on h1 must appear in the full move list')
+  assert.equal(chessStatus(position).startsWith('Draw'), false)
 })

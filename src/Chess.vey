@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react'
-import { applyMove, chessStatus, chooseComputerMove, legalMoves, pieceGlyph, sanForMove, squareName, startPosition, type ChessMove, type ChessPosition, type ChessRecord } from './engine'
+import { useEffect, useRef, useState } from 'react'
+import { applyMove, chessStatus, chooseMoveForElo, clampElo, DEFAULT_ELO, ELO_STEP, eloLabel, legalMoves, MAX_ELO, MIN_ELO, pieceGlyph, sanForMove, squareName, startPosition, type ChessMove, type ChessPosition, type ChessRecord } from './engine'
+import { applyRemoteMoves, createGame, fetchState, joinGame, normalizeCode, POLL_MS, prettyCode, resignGame, sendMove, type RoomState } from './online'
 
 const promotionGlyph: Record<string, string> = { Q: '♕', R: '♖', B: '♗', N: '♘' }
+const ELO_KEY = 'clikey.chess.elo'
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+interface OnlineGame { code: string; token: string; color: 'w' | 'b'; players: { w: boolean; b: boolean }; result: RoomState['result'] }
 export default fn Chess(props: { showAds?: boolean } = {}) {
   const [position, setPosition] = useState<ChessPosition>(startPosition())
   const [records, setRecords] = useState<ChessRecord[]>([])
@@ -9,12 +13,25 @@ export default fn Chess(props: { showAds?: boolean } = {}) {
   const [choices, setChoices] = useState<ChessMove[]>([])
   const [flipped, setFlipped] = useState(false)
   const [promotion, setPromotion] = useState('Q')
-  const [mode, setMode] = useState<'local' | 'computer'>('local')
+  const [mode, setMode] = useState<'local' | 'computer' | 'online'>('local')
   const [playerColor, setPlayerColor] = useState<'w' | 'b'>('w')
   const [thinking, setThinking] = useState(false)
+  const [elo, setElo] = useState(DEFAULT_ELO)
+  const [online, setOnline] = useState<OnlineGame | null>(null)
+  const [onlineMsg, setOnlineMsg] = useState('')
+  const [onlineBusy, setOnlineBusy] = useState(false)
+  const [hostColor, setHostColor] = useState<'w' | 'b' | 'random'>('random')
+  const [joinText, setJoinText] = useState('')
+  const [copied, setCopied] = useState(false)
+  const live = useRef({ position, records })
+  live.current = { position, records }
   const status = chessStatus(position)
   const computerColor = playerColor == 'w' ? 'b' : 'w'
-  const gameOver = status.startsWith('Checkmate') or status.startsWith('Draw')
+  const bothHere = online ? online.players.w and online.players.b : true
+  const resigned = online?.result ? `${online.result.loser == 'w' ? 'White' : 'Black'} resigned · ${online.result.loser == 'w' ? 'Black' : 'White'} wins` : ''
+  const gameOver = status.startsWith('Checkmate') or status.startsWith('Draw') or Boolean(online?.result)
+  const statusText = resigned or (mode == 'online' and online and not bothHere ? 'Waiting for your friend to join…' : status)
+  useEffect(() => { try { const saved = Number(window.localStorage.getItem(ELO_KEY)); if saved { setElo(clampElo(saved)) } } catch {} }, [])
   useEffect(() => { const host = window.location.hostname; document.title = host == 'clikey.store' or host.endsWith('.clikey.store') ? 'Chess · Clikey' : 'Chess · Veynor' }, [])
   const reset = () => { setPosition(startPosition()); setRecords([]); setSelected(null); setChoices([]); setThinking(false) }
   const undo = () => {
@@ -22,13 +39,64 @@ export default fn Chess(props: { showAds?: boolean } = {}) {
     if not last { return }
     setPosition(last.before); setRecords(records.slice(0, -1)); setSelected(null); setChoices([])
   }
+  const changeElo = (value: number) => {
+    const next = clampElo(value)
+    setElo(next)
+    try { window.localStorage.setItem(ELO_KEY, String(next)) } catch {}
+  }
+  const enterGame = (game: { code: string; token: string; color: 'w' | 'b' }, players: { w: boolean; b: boolean }) => {
+    reset(); setFlipped(game.color == 'b')
+    setOnline({ code: game.code, token: game.token, color: game.color, players, result: null }); setOnlineMsg('')
+  }
+  const leaveOnline = () => { setOnline(null); setOnlineMsg(''); setCopied(false); reset(); setFlipped(false) }
+  const hostGame = async () => {
+    setOnlineBusy(true); setOnlineMsg('')
+    const made = await createGame(hostColor)
+    setOnlineBusy(false)
+    if made.ok and made.data { enterGame(made.data, { w: made.data.color == 'w', b: made.data.color == 'b' }) } else { setOnlineMsg(made.error ?? 'Could not start a game.') }
+  }
+  const joinByCode = async () => {
+    const code = normalizeCode(joinText)
+    if not code { setOnlineMsg('Type the 6-character code your friend sent you.'); return }
+    setOnlineBusy(true); setOnlineMsg('')
+    const joined = await joinGame(code)
+    setOnlineBusy(false)
+    if joined.ok and joined.data { enterGame(joined.data, { w: true, b: true }); setJoinText('') } else { setOnlineMsg(joined.error ?? 'Could not join that game.') }
+  }
+  const copyCode = async () => {
+    if not online { return }
+    try { await navigator.clipboard.writeText(online.code); setCopied(true) } catch { setCopied(false) }
+  }
+  const resign = async () => {
+    if not online { return }
+    const done = await resignGame(online.code, online.token)
+    if done.ok and done.data { setOnline({ ...online, result: done.data.result }) } else { setOnlineMsg(done.error ?? 'Could not resign.') }
+  }
+  # Send a move to the other player. If it cannot get through after a few tries, take it back so both boards agree.
+  const pushMove = async (game: OnlineGame, move: ChessMove, ply: number, before: ChessPosition, earlier: ChessRecord[]) => {
+    for attempt in 0..3 {
+      const sent = await sendMove(game.code, game.token, move, ply)
+      if sent.ok { return }
+      if sent.code != 'network' { break }
+      await wait(700 * (attempt + 1))
+    }
+    setPosition(before); setRecords(earlier); setSelected(null); setChoices([])
+    setOnlineMsg('That move could not be sent, so it was taken back. Try it again.')
+  }
+  const changeMode = (next: 'local' | 'computer' | 'online') => {
+    if mode == 'online' and next != 'online' { leaveOnline() }
+    if next == 'online' and mode != 'online' { reset(); setFlipped(false) }
+    setMode(next); setThinking(false)
+  }
   const clickSquare = (square: number) => {
     if gameOver or mode == 'computer' and position.turn != playerColor or thinking { return }
+    if mode == 'online' and (not online or not bothHere or position.turn != online.color) { return }
     const move = selected == null ? null : choices.find(choice => choice.to == square)
     if move {
       const selectedMove = move.promotion ? { ...move, promotion } : move
       const record = { move: selectedMove, san: sanForMove(position, selectedMove), before: position }
       setPosition(applyMove(position, selectedMove)); setRecords([...records, record]); setSelected(null); setChoices([])
+      if mode == 'online' and online { void pushMove(online, selectedMove, records.length, position, records) }
       return
     }
     if position.board[square]?.startsWith(position.turn) {
@@ -39,7 +107,7 @@ export default fn Chess(props: { showAds?: boolean } = {}) {
     if mode != 'computer' or position.turn != computerColor or gameOver { setThinking(false); return }
     setThinking(true)
     const timer = setTimeout(() => {
-      const move = chooseComputerMove(position, 3)
+      const move = chooseMoveForElo(position, elo)
       if move {
         const record = { move, san: sanForMove(position, move), before: position }
         setPosition(applyMove(position, move)); setRecords(previous => [...previous, record])
@@ -47,16 +115,40 @@ export default fn Chess(props: { showAds?: boolean } = {}) {
       setThinking(false)
     }, 180)
     return () => clearTimeout(timer)
-  }, [mode, position, gameOver, computerColor])
+  }, [mode, position, gameOver, computerColor, elo])
+  # While in an online game, ask the room for new moves about once a second and check each one against the rules.
+  useEffect(() => {
+    if not online { return }
+    const game = online
+    let stopped = false
+    const tick = async () => {
+      const since = live.current.records.length
+      const state = await fetchState(game.code, game.token, since)
+      if stopped { return }
+      if not state.ok or not state.data {
+        if state.code == 'not-found' or state.code == 'forbidden' { setOnlineMsg('This game has ended or expired. Start a new one.'); setOnline(null) }
+        return
+      }
+      const data = state.data
+      setOnline(previous => previous ? { ...previous, players: data.players, result: data.result } : previous)
+      if data.moves.length == 0 or live.current.records.length != since { return }
+      const applied = applyRemoteMoves(live.current.position, live.current.records, data.moves)
+      setPosition(applied.position); setRecords(applied.records); setSelected(null); setChoices([])
+      if applied.error { setOnlineMsg(applied.error); setOnline(null) }
+    }
+    const timer = setInterval(tick, POLL_MS)
+    void tick()
+    return () => { stopped = true; clearInterval(timer) }
+  }, [online?.code, online?.token])
   const orderedSquares = [...Array(64).keys()]
   if flipped { orderedSquares.reverse() }
   const latest = records.at(-1)?.move
   return <main className="chess-page">
-    <header className="chess-topbar"><a className="chess-wordmark" href="/" aria-label="Clikey Chess home"><span>♞</span> clikey<span className="chess-wordmark-dot">.</span></a><a className="chess-top-label" href="/hub">GAME HUB ↗</a><span className="chess-top-label chess-local">LOCAL · 2 PLAYERS</span></header>
+    <header className="chess-topbar"><a className="chess-wordmark" href="/" aria-label="Clikey Chess home"><span>♞</span> clikey<span className="chess-wordmark-dot">.</span></a><a className="chess-top-label" href="/hub">GAME HUB ↗</a><span className="chess-top-label chess-local">{mode == 'local' ? 'LOCAL · 2 PLAYERS' : mode == 'computer' ? `VS COMPUTER · ~${elo}` : online ? 'ONLINE · BY CODE' : 'ONLINE'}</span></header>
     <section className="chess-layout">
       <div className="chess-main">
         <div className="chess-heading"><div><span className="chess-kicker">THE CLASSIC, MADE CLEAR</span><h1>Chess</h1></div><button className="chess-icon-button" aria-label="Flip board" title="Flip board" onClick={() => setFlipped(not flipped)}>⇅</button></div>
-        <div className="chess-player chess-player-top"><span className={`chess-player-piece ${position.turn == (flipped ? 'w' : 'b') ? 'active' : ''}`}>{flipped ? '♔' : '♚'}</span><span><strong>{flipped ? 'White' : 'Black'}</strong><small>{position.turn == (flipped ? 'w' : 'b') ? 'To move' : 'Ready'}</small></span></div>
+        <div className="chess-player chess-player-top"><span className={`chess-player-piece ${position.turn == (flipped ? 'w' : 'b') ? 'active' : ''}`}>{flipped ? '♔' : '♚'}</span><span><strong>{flipped ? 'White' : 'Black'}{online and online.color == (flipped ? 'w' : 'b') ? ' · you' : ''}</strong><small>{position.turn == (flipped ? 'w' : 'b') ? 'To move' : 'Ready'}</small></span></div>
         <div className="chess-board-wrap"><div className="chess-coords chess-coords-files">{(flipped ? 'hgfedcba' : 'abcdefgh').split('').map(file => <span key={file}>{file}</span>)}</div><div className="chess-board" role="grid" aria-label="Chess board">
           {orderedSquares.map(square => {
             const row = Math.floor(square / 8), col = square % 8, piece = position.board[square]
@@ -66,16 +158,24 @@ export default fn Chess(props: { showAds?: boolean } = {}) {
             </button>
           })}
         </div><div className="chess-coords chess-coords-ranks">{(flipped ? '12345678' : '87654321').split('').map(rank => <span key={rank}>{rank}</span>)}</div></div>
-        <div className="chess-player chess-player-bottom"><span className={`chess-player-piece ${position.turn == (flipped ? 'b' : 'w') ? 'active' : ''}`}>{flipped ? '♚' : '♔'}</span><span><strong>{flipped ? 'Black' : 'White'}</strong><small>{position.turn == (flipped ? 'b' : 'w') ? 'To move' : 'Ready'}</small></span></div>
+        <div className="chess-player chess-player-bottom"><span className={`chess-player-piece ${position.turn == (flipped ? 'b' : 'w') ? 'active' : ''}`}>{flipped ? '♚' : '♔'}</span><span><strong>{flipped ? 'Black' : 'White'}{online and online.color == (flipped ? 'b' : 'w') ? ' · you' : ''}</strong><small>{position.turn == (flipped ? 'b' : 'w') ? 'To move' : 'Ready'}</small></span></div>
       </div>
       <aside className="chess-side">
-        <div className="chess-mode-tabs" aria-label="Game mode"><button className={mode == 'local' ? 'selected' : ''} aria-pressed={mode == 'local'} onClick={() => { setMode('local'); setThinking(false) }}>Two players</button><button className={mode == 'computer' ? 'selected' : ''} aria-pressed={mode == 'computer'} onClick={() => { setMode('computer'); setThinking(false) }}>Vs computer</button></div>
+        <div className="chess-mode-tabs three" aria-label="Game mode"><button className={mode == 'local' ? 'selected' : ''} aria-pressed={mode == 'local'} onClick={() => changeMode('local')}>Two players</button><button className={mode == 'computer' ? 'selected' : ''} aria-pressed={mode == 'computer'} onClick={() => changeMode('computer')}>Vs computer</button><button className={mode == 'online' ? 'selected' : ''} aria-pressed={mode == 'online'} onClick={() => changeMode('online')}>Online</button></div>
         {mode == 'computer' ? <div className="chess-color-picker" aria-label="Choose your color"><span>PLAY AS</span><div><button className={playerColor == 'w' ? 'selected' : ''} aria-pressed={playerColor == 'w'} onClick={() => { setPlayerColor('w'); setFlipped(false); reset() }}><b>♔</b> White</button><button className={playerColor == 'b' ? 'selected' : ''} aria-pressed={playerColor == 'b'} onClick={() => { setPlayerColor('b'); setFlipped(true); reset() }}><b>♚</b> Black</button></div></div> : null}
-        <div className={`chess-status-card ${status.includes('Check') or status.startsWith('Checkmate') ? 'check' : ''}`}><span className="chess-status-dot" /><div><small>GAME STATUS</small><strong role="status" aria-live="polite">{thinking ? 'Computer thinking…' : status}</strong></div></div>
-        <div className="chess-controls"><button className="chess-new-game" onClick={reset}>New game <span>↗</span></button><button className="chess-undo" disabled={!records.length} onClick={undo}>↶ <span>Undo move</span></button><button className="chess-undo" onClick={() => setFlipped(not flipped)}>⇅ <span>Flip board</span></button></div>
+        {mode == 'computer' ? <div className="chess-elo"><div className="chess-elo-head"><span>COMPUTER STRENGTH</span><strong>{elo} · {eloLabel(elo)}</strong></div><input type="range" min={MIN_ELO} max={MAX_ELO} step={ELO_STEP} value={elo} aria-label="Computer strength in Elo points" aria-valuetext={`${elo}, ${eloLabel(elo)}`} onChange={e => changeElo(Number(e.target.value))} /><div className="chess-elo-scale"><span>Gentle</span><span>Sharp</span></div><small>A rough guide, not an official rating. Lower levels look fewer moves ahead and sometimes slip; the top level plays its best every move.</small></div> : null}
+        {mode == 'online' ? <div className="chess-online">{online ? <>
+          <div className="chess-code"><span>GAME CODE</span><strong aria-label={`Game code ${online.code.split('').join(' ')}`}>{prettyCode(online.code)}</strong><button onClick={copyCode}>{copied ? 'Copied' : 'Copy code'}</button></div>
+          <p className="chess-online-note">{bothHere ? `Connected. You are ${online.color == 'w' ? 'White' : 'Black'}.` : `You are ${online.color == 'w' ? 'White' : 'Black'}. Send this code to your friend. They open Clikey Chess, choose Online and type it in.`}</p>
+        </> : <>
+          <div className="chess-online-block"><span>START A GAME</span><div className="chess-online-colors" role="group" aria-label="Your color"><button className={hostColor == 'random' ? 'selected' : ''} aria-pressed={hostColor == 'random'} onClick={() => setHostColor('random')}>Random</button><button className={hostColor == 'w' ? 'selected' : ''} aria-pressed={hostColor == 'w'} onClick={() => setHostColor('w')}><b>♔</b> White</button><button className={hostColor == 'b' ? 'selected' : ''} aria-pressed={hostColor == 'b'} onClick={() => setHostColor('b')}><b>♚</b> Black</button></div><button className="chess-online-go" disabled={onlineBusy} onClick={hostGame}>{onlineBusy ? 'Starting…' : 'Make a game code'}</button></div>
+          <div className="chess-online-block"><span>JOIN A FRIEND</span><div className="chess-join"><input value={joinText} aria-label="Game code" placeholder="ABC-123" maxLength={8} autoCapitalize="characters" autoComplete="off" spellCheck={false} onChange={e => { setJoinText(e.target.value); setOnlineMsg('') }} onKeyDown={e => { if e.key == 'Enter' { void joinByCode() } }} /><button className="chess-online-go" disabled={onlineBusy or not joinText.trim()} onClick={joinByCode}>Join</button></div></div>
+        </>}{onlineMsg ? <p className="chess-online-error" role="alert">{onlineMsg}</p> : null}</div> : null}
+        <div className={`chess-status-card ${status.includes('Check') or status.startsWith('Checkmate') or resigned ? 'check' : ''}`}><span className="chess-status-dot" /><div><small>GAME STATUS</small><strong role="status" aria-live="polite">{thinking ? 'Computer thinking…' : statusText}</strong></div></div>
+        <div className="chess-controls">{mode == 'online' ? <>{online ? <><button className="chess-new-game" disabled={not bothHere or gameOver} onClick={resign}>Resign <span>⚑</span></button><button className="chess-undo" onClick={leaveOnline}>✕ <span>Leave game</span></button></> : null}<button className="chess-undo" onClick={() => setFlipped(not flipped)}>⇅ <span>Flip board</span></button></> : <><button className="chess-new-game" onClick={reset}>New game <span>↗</span></button><button className="chess-undo" disabled={!records.length} onClick={undo}>↶ <span>Undo move</span></button><button className="chess-undo" onClick={() => setFlipped(not flipped)}>⇅ <span>Flip board</span></button></>}</div>
         <div className="chess-promotion"><small>PROMOTION PIECE</small><div>{['Q','R','B','N'].map(piece => <button key={piece} className={promotion == piece ? 'chosen' : ''} aria-label={`Promote to ${piece == 'Q' ? 'queen' : piece == 'R' ? 'rook' : piece == 'B' ? 'bishop' : 'knight'}`} aria-pressed={promotion == piece} onClick={() => setPromotion(piece)}>{promotionGlyph[piece]}</button>)}</div></div>
         <div className="chess-moves"><div className="chess-section-title"><strong>Moves</strong><span>{records.length} ply</span></div>{records.length ? <ol>{records.map((record, i) => <li key={i} className={i == records.length - 1 ? 'current' : ''}><span>{Math.floor(i / 2) + 1}{i % 2 == 0 ? '.' : '…'}</span><b>{record.san}</b></li>)}</ol> : <p className="chess-empty">Your opening move is waiting.</p>}</div>
-        <p className="chess-note">{mode == 'local' ? 'A quiet game, face to face. Pass the device after each move.' : `You play ${playerColor == 'w' ? 'White' : 'Black'} against a stronger private on-device opponent. Your game stays here.`}</p>
+        <p className="chess-note">{mode == 'local' ? 'A quiet game, face to face. Pass the device after each move.' : mode == 'computer' ? `You play ${playerColor == 'w' ? 'White' : 'Black'} against a private on-device opponent set to about ${elo}. Your game stays here.` : 'Online games send each move, and nothing else, through a small game server so two computers can play. No accounts. A game ends after three idle hours.'}</p>
       </aside>
     </section>
     <footer className="chess-footer"><span>CLIKEY · A GAME FOR TWO</span><span>Take your time.</span></footer>

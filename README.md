@@ -1,8 +1,30 @@
 # Clikey Chess
 
 A small, standalone chess website written in Vey (`.vey`). Play pass-and-play
-with another person or challenge the local computer opponent. The opponent
-searches the position on this device; it does not send game state to a server.
+with another person, challenge the local computer opponent at a strength you
+choose, or play a friend on another computer with a game code. The computer
+opponent searches the position on this device; it does not send game state to a
+server. Only online games contact a server (see "Online play" below).
+
+## Computer strength
+
+The slider in Vs computer runs 400 to 1600 Elo in steps of 100 (`src/engine.vey`,
+`levelForElo`). Strength comes from search depth (1, 2 or 3 plies) plus a chance
+of a human-style slip that falls to zero at the top level. The numbers are a
+rough guide, not a rating: tournaments between levels (a higher level beat the
+one below it in every pairing we tried, 10 games each) are how it was checked.
+The choice is stored in localStorage under `clikey.chess.elo`.
+
+## Online play
+
+Choose Online, make a game code, and send it to a friend, who types it under
+Join. Rooms live in memory on the Mega backend (`mambru-backend`,
+`routes/chessRooms.js`, `lib/chessRooms.js`, `/api/chess/...`): no accounts, no
+names, expire after 3 idle hours. The server keeps order and turns; each browser
+checks every received move with its own rules engine (`applyRemoteMoves` in
+`src/online.vey`). To point a build at another server, set
+`window.CLIKEY_CHESS_SERVER` before the app calls it, or change `SERVER` in
+`src/online.vey`.
 
 ## Run it
 

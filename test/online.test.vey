@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { applyMove, legalMoves, startPosition } from '../src/engine.vey'
+import { applyRemoteMoves, createGame, fetchState, joinGame, normalizeCode, prettyCode, sendMove } from '../src/online.vey'
+
+test('codes are tidied, read aloud friendly, and anything else is refused', () => {
+  assert.equal(normalizeCode(' abc-234 '), 'ABC234')
+  assert.equal(normalizeCode('abc 234'), 'ABC234')
+  assert.equal(normalizeCode('ABC12'), '')
+  assert.equal(normalizeCode('ABCO23'), '') # no letter O
+  assert.equal(normalizeCode('ABC1I3'), '') # no 1 or I
+  assert.equal(normalizeCode(undefined as unknown as string), '')
+  assert.equal(prettyCode('ABC234'), 'ABC-234')
+})
+
+test('moves from the other computer are checked against the rules before they reach the board', () => {
+  const start = startPosition()
+  const good = applyRemoteMoves(start, [], [{ from: 52, to: 36 }, { from: 12, to: 28 }])
+  assert.equal(good.error, '')
+  assert.equal(good.records.length, 2)
+  assert.deepEqual(good.records.map(record => record.san), ['e4', 'e5'])
+  assert.equal(good.position.turn, 'w')
+  const bad = applyRemoteMoves(start, [], [{ from: 52, to: 36 }, { from: 8, to: 40 }]) # black pawn a7 jumping to a3
+  assert.match(bad.error, /not legal/)
+  assert.equal(bad.records.length, 1)
+  assert.equal(applyRemoteMoves(start, [], [{ from: 60, to: 4 }]).error.length > 0, true) # king through the board
+})
+
+test('a promotion chosen by the opponent is kept, and a made-up one falls back to a queen', () => {
+  const board = Array(64).fill(null)
+  board[0] = 'bK'; board[60] = 'wK'; board[8] = 'wP'
+  const position = { board, turn: 'w' as const, castling: '', enPassant: null, halfmove: 0, fullmove: 1 }
+  assert.equal(applyRemoteMoves(position, [], [{ from: 8, to: 0 + 0, promotion: 'N' }]).error.length > 0, true) # a8 is occupied by the king
+  board[0] = null; board[4] = 'bK'
+  const knight = applyRemoteMoves({ ...position, board: [...board] }, [], [{ from: 8, to: 0, promotion: 'N' }])
+  assert.equal(knight.position.board[0], 'wN')
+  const fake = applyRemoteMoves({ ...position, board: [...board] }, [], [{ from: 8, to: 0, promotion: 'K' }])
+  assert.equal(fake.position.board[0], 'wQ')
+})
+
+test('the network helpers talk to /api/chess, send only the move squares, and turn failures into plain errors', async () => {
+  const seen: Array<{ url: string; init: RequestInit }> = []
+  const fake = async (url: string, init: RequestInit) => {
+    seen.push({ url, init })
+    if url.endsWith('/rooms') { return new Response(JSON.stringify({ code: 'ABC234', token: 'tok', color: 'w' }), { status: 201 }) }
+    if url.includes('/rooms/ZZZZZZ/join') { return new Response(JSON.stringify({ error: 'That game code was not found.', code: 'not-found' }), { status: 404 }) }
+    return new Response(JSON.stringify({ version: 1, moves: [], players: { w: true, b: false }, result: null, color: 'w' }), { status: 200 })
+  }
+  const made = await createGame('random', fake as unknown as typeof fetch)
+  assert.equal(made.ok, true)
+  assert.equal(made.data?.code, 'ABC234')
+  assert.match(seen[0].url, /\/api\/chess\/rooms$/)
+  assert.deepEqual(JSON.parse(seen[0].init.body as string), { color: 'random' })
+  const missing = await joinGame('ZZZZZZ', fake as unknown as typeof fetch)
+  assert.equal(missing.ok, false)
+  assert.equal(missing.code, 'not-found')
+  await sendMove('ABC234', 'tok', { from: 52, to: 36, castle: 'K', enPassant: true }, 0, fake as unknown as typeof fetch)
+  const sent = JSON.parse(seen.at(-1)!.init.body as string)
+  assert.deepEqual(sent, { move: { from: 52, to: 36 }, ply: 0 })
+  assert.equal((seen.at(-1)!.init.headers as Record<string, string>).Authorization, 'Bearer tok')
+  const state = await fetchState('ABC234', 'tok', 3, fake as unknown as typeof fetch)
+  assert.match(seen.at(-1)!.url, /\/rooms\/ABC234\?since=3$/)
+  assert.equal(state.data?.players.w, true)
+  const offline = await createGame('w', (async () => { throw new Error('offline') }) as unknown as typeof fetch)
+  assert.equal(offline.ok, false)
+  assert.equal(offline.code, 'network')
+  assert.match(offline.error ?? '', /internet/)
+})
